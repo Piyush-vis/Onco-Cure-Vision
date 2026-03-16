@@ -1,0 +1,40 @@
+# ── Python Cache ──────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# ── Virtual Environments ──────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+wsl_venv/
+
+# ── Environment Variables ─────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Model Weights / Large binary files ───────────────────────────────────────
+# U-Net model checkpoints can be hundreds of MB – don't commit them
+brain-tumor-segmentation-unet/
+*.h5
+*.pt
+*.pth
+*.ckpt
+*.pb
+
+# ── Datasets ─────────────────────────────────────────────────────────────────
+brain_tumor_dataset/
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+logs/
+*.log
+
+# ── OS / Editor ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/

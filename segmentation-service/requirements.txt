@@ -1,0 +1,6 @@
+nibabel==5.2.1
+numpy==1.26.4
+scikit-image==0.22.0
+trimesh==4.0.10
+pydicom==2.4.4
+Flask==3.0.2
