@@ -1,85 +1,425 @@
+"""
+Real U-Net inference for brain tumor segmentation.
+
+Replaces the mock predict_tumor() with actual model inference.
+Supports both DICOM and NIfTI input files.
+
+Usage:
+    python predict_segmentation.py <input_folder>
+
+Output (stdout JSON):
+    - segmentation metadata (type, confidence, volume, characteristics)
+    - saves brain_flair.nii and tumor_seg.nii to input_folder for mesh_generator.py
+"""
+
 import os
 import sys
 import json
 import numpy as np
 import pydicom
 import nibabel as nib
+import torch
+from scipy.ndimage import zoom, label as nd_label
+from unet3d import UNet3D
 
-# MOCK/PLACEHOLDER U-Net Inference for Aditya Jain's Brain Tumor Segmentation
-# In a real environment, you would import torch/tensorflow and load your .h5/.pt weights here.
 
+# ─── Constants ──────────────────────────────────────────────
+MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
+MODEL_PATH = os.path.join(MODEL_DIR, 'best_model.pth')
+CROP_SIZE = 128   # Must match training crop size
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# Global model cache
+_MODEL = None
+
+
+# ─── Model Loading ──────────────────────────────────────────
+def load_model():
+    """Load the trained U-Net model. Cached after first call."""
+    global _MODEL
+    if _MODEL is not None:
+        return _MODEL
+    
+    if not os.path.exists(MODEL_PATH):
+        raise FileNotFoundError(
+            f"Model weights not found at {MODEL_PATH}. "
+            "Please train the model first with: python train_unet.py"
+        )
+    
+    print(f"Loading model from {MODEL_PATH}...", file=sys.stderr)
+    
+    model = UNet3D(in_channels=4, out_channels=4, base_filters=32)
+    checkpoint = torch.load(MODEL_PATH, map_location=DEVICE, weights_only=False)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.to(DEVICE)
+    model.eval()
+    
+    dice_score = checkpoint.get('dice_score', 'unknown')
+    print(f"Model loaded. Training Dice score: {dice_score}", file=sys.stderr)
+    
+    _MODEL = model
+    return _MODEL
+
+
+# ─── Normalization ──────────────────────────────────────────
+def normalize(volume):
+    """Z-score normalization on non-zero voxels (same as training)."""
+    mask = volume > 0
+    if mask.sum() == 0:
+        return volume.astype(np.float32)
+    mean = volume[mask].mean()
+    std = volume[mask].std()
+    volume = volume.astype(np.float32)
+    volume[mask] = (volume[mask] - mean) / (std + 1e-8)
+    return volume
+
+
+# ─── File Loading ───────────────────────────────────────────
 def load_dicom_series(folder_path):
-    # Load all DICOM files in the folder
+    """Load all DICOM files from a folder and return a 3D numpy array."""
     slices = []
     for f in os.listdir(folder_path):
-        if f.lower().endswith('.dcm'):
+        if f.lower().endswith('.dcm') or f.lower().endswith('.dicom'):
             try:
                 ds = pydicom.dcmread(os.path.join(folder_path, f))
                 slices.append(ds)
-            except:
+            except Exception:
                 pass
-                
+    
     if not slices:
-        raise ValueError(f"No valid DICOM files found in {folder_path}")
-
-    # Sort slices by ImagePositionPatient Z coordinate (or InstanceNumber)
-    slices.sort(key=lambda x: float(x.ImagePositionPatient[2]) if hasattr(x, 'ImagePositionPatient') else x.InstanceNumber)
-
-    # Convert to 3D numpy array
-    image_3d = np.stack([s.pixel_array for s in slices])
+        return None, None
+    
+    # Sort by Z position or InstanceNumber
+    slices.sort(key=lambda x: float(x.ImagePositionPatient[2]) 
+                if hasattr(x, 'ImagePositionPatient') else int(x.InstanceNumber))
+    
+    image_3d = np.stack([s.pixel_array.astype(np.float32) for s in slices])
     return image_3d, slices[0]
 
-def predict_tumor(image_3d):
-    # PREDICTION MOCK:
-    # A real implementation would run image_3d through the U-net model.
-    # We will generate a mock mask in the center of the brain volume.
-    
-    seg_3d = np.zeros_like(image_3d, dtype=np.uint8)
-    
-    z_center, y_center, x_center = [dim // 2 for dim in image_3d.shape]
-    r = int(min(image_3d.shape) * 0.15) # 15% radius tumor
-    
-    # Draw a primitive sphere for the mock mask
-    z, y, x = np.ogrid[-z_center:image_3d.shape[0]-z_center, 
-                       -y_center:image_3d.shape[1]-y_center, 
-                       -x_center:image_3d.shape[2]-x_center]
-    mask = x*x + y*y + z*z <= r*r
-    
-    seg_3d[mask] = 1 # 1 represents the tumor class
 
-    # Mock dynamic metadata based on "AI Confidence"
-    confidence = round(np.random.uniform(85.0, 99.0), 1)
+def load_nifti_files(folder_path):
+    """
+    Load NIfTI files from folder. Handles two cases:
+    1. BraTS-style: separate t1, t1ce, t2, flair, [seg] files
+    2. Single NIfTI: one brain volume file
     
-    # Classify based on some fake heuristic
-    tumor_type = np.random.choice(['Meningioma', 'Glioma', 'Pituitary Tumor'])
+    Returns: (image_4ch, seg_if_exists, affine, original_shape)
+    """
+    nii_files = {}
+    for f in os.listdir(folder_path):
+        fl = f.lower()
+        if fl.endswith('.nii') or fl.endswith('.nii.gz'):
+            full_path = os.path.join(folder_path, f)
+            # Categorize by modality
+            if 't1ce' in fl or 't1gd' in fl:
+                nii_files['t1ce'] = full_path
+            elif 't1' in fl and 'ce' not in fl:
+                nii_files['t1'] = full_path
+            elif 't2' in fl:
+                nii_files['t2'] = full_path
+            elif 'flair' in fl:
+                nii_files['flair'] = full_path
+            elif 'seg' in fl or 'mask' in fl or 'label' in fl:
+                nii_files['seg'] = full_path
+            else:
+                # Generic / single file
+                if 'generic' not in nii_files:
+                    nii_files['generic'] = full_path
     
-    return seg_3d, confidence, tumor_type
+    seg_data = None
+    
+    # Case 1: BraTS-style with all 4 modalities
+    if all(k in nii_files for k in ['t1', 't1ce', 't2', 'flair']):
+        print("  Found BraTS-style 4-modality NIfTI files", file=sys.stderr)
+        t1 = nib.load(nii_files['t1'])
+        affine = t1.affine
+        
+        t1_data = normalize(t1.get_fdata())
+        t1ce_data = normalize(nib.load(nii_files['t1ce']).get_fdata())
+        t2_data = normalize(nib.load(nii_files['t2']).get_fdata())
+        flair_data = normalize(nib.load(nii_files['flair']).get_fdata())
+        
+        image_4ch = np.stack([t1_data, t1ce_data, t2_data, flair_data], axis=0)
+        
+        if 'seg' in nii_files:
+            seg_data = nib.load(nii_files['seg']).get_fdata()
+        
+        return image_4ch, seg_data, affine, t1_data.shape
+    
+    # Case 2: Single NIfTI file — duplicate across 4 channels
+    single_path = nii_files.get('flair') or nii_files.get('t2') or nii_files.get('generic')
+    if single_path is None:
+        single_path = next(iter(nii_files.values()))
+    
+    print(f"  Single NIfTI file mode: {os.path.basename(single_path)}", file=sys.stderr)
+    nii = nib.load(single_path)
+    data = normalize(nii.get_fdata())
+    
+    # Duplicate to 4 channels (model expects 4 input channels)
+    image_4ch = np.stack([data, data, data, data], axis=0)
+    
+    if 'seg' in nii_files:
+        seg_data = nib.load(nii_files['seg']).get_fdata()
+    
+    return image_4ch, seg_data, nii.affine, data.shape
 
+
+# ─── Inference ──────────────────────────────────────────────
+def predict_tumor(image_4ch, original_shape):
+    """
+    Run real U-Net inference on a 4-channel 3D MRI volume.
+    
+    Args:
+        image_4ch: numpy array (4, D, H, W) — 4 MRI modalities, already normalized
+        original_shape: (D, H, W) — original volume dimensions before resizing
+    
+    Returns:
+        seg_3d: (D, H, W) segmentation mask with BraTS labels (0,1,2,4)
+        confidence: float 0-100
+        metadata: dict with tumor characteristics
+    """
+    model = load_model()
+    
+    _, d, h, w = image_4ch.shape
+    
+    # Resize to model input size if needed
+    target = CROP_SIZE
+    scale_factors = [target / d, target / h, target / w]
+    needs_resize = (d != target or h != target or w != target)
+    
+    if needs_resize:
+        # Resize each channel
+        resized_channels = []
+        for ch in range(4):
+            resized_channels.append(zoom(image_4ch[ch], scale_factors, order=1))
+        input_vol = np.stack(resized_channels, axis=0)
+    else:
+        input_vol = image_4ch
+    
+    # Prepare tensor: (1, 4, D, H, W)
+    input_tensor = torch.tensor(input_vol, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+    
+    # Run inference
+    with torch.no_grad():
+        with torch.amp.autocast(device_type='cuda' if DEVICE.type == 'cuda' else 'cpu'):
+            output = model(input_tensor)  # (1, 4, 128, 128, 128)
+        
+        probs = torch.softmax(output, dim=1)  # (1, 4, 128, 128, 128)
+        pred = torch.argmax(probs, dim=1).squeeze(0)  # (128, 128, 128)
+        
+        # Get confidence: mean probability of predicted tumor voxels
+        tumor_mask_pred = (pred > 0)
+        if tumor_mask_pred.sum() > 0:
+            # Max probability for each predicted tumor voxel
+            tumor_probs = probs[0, 1:, :, :, :]  # (3, D, H, W) — 3 tumor classes
+            max_probs = tumor_probs.max(dim=0)[0]  # (D, H, W)
+            confidence = float(max_probs[tumor_mask_pred].mean().item()) * 100
+        else:
+            confidence = 0.0
+    
+    seg_np = pred.cpu().numpy().astype(np.uint8)
+    
+    # Resize segmentation back to original volume size
+    if needs_resize:
+        inv_scale = [d / target, h / target, w / target]
+        seg_np = zoom(seg_np.astype(np.float32), inv_scale, order=0).astype(np.uint8)
+    
+    # Remove small connected components (noise) — keep only components > 50 voxels
+    for label_val in [1, 2, 3]:
+        binary = (seg_np == label_val)
+        if binary.sum() == 0:
+            continue
+        labeled, num_features = nd_label(binary)
+        for comp_id in range(1, num_features + 1):
+            comp_mask = (labeled == comp_id)
+            if comp_mask.sum() < 50:
+                seg_np[comp_mask] = 0
+    
+    # Convert back to BraTS labels: 0,1,2,3 -> 0,1,2,4
+    brats_seg = np.zeros_like(seg_np)
+    brats_seg[seg_np == 1] = 1  # necrotic
+    brats_seg[seg_np == 2] = 2  # edema
+    brats_seg[seg_np == 3] = 4  # enhancing
+    
+    # Compute metadata from segmentation
+    metadata = analyze_segmentation(brats_seg, confidence)
+    
+    return brats_seg, confidence, metadata
+
+
+def analyze_segmentation(seg, confidence):
+    """Derive real metadata from the segmentation mask."""
+    total_tumor = np.sum(seg > 0)
+    necrotic_count = np.sum(seg == 1)
+    edema_count = np.sum(seg == 2)
+    enhancing_count = np.sum(seg == 4)
+    
+    # Tumor type classification based on sub-region ratios
+    if total_tumor == 0:
+        tumor_type = "No Tumor Detected"
+    elif enhancing_count > total_tumor * 0.3:
+        tumor_type = "High-Grade Glioma (HGG)"
+    elif edema_count > total_tumor * 0.5:
+        tumor_type = "Low-Grade Glioma (LGG)"
+    elif necrotic_count > total_tumor * 0.4:
+        tumor_type = "Glioblastoma (GBM)"
+    else:
+        tumor_type = "Glioma"
+    
+    # Margin analysis
+    if total_tumor == 0:
+        margins = "N/A"
+    else:
+        # Check regularity by comparing surface area to volume ratio
+        from skimage.measure import marching_cubes
+        try:
+            binary_tumor = (seg > 0).astype(np.float32)
+            verts, faces, _, _ = marching_cubes(binary_tumor, level=0.5)
+            surface_area = 0
+            for face in faces[:min(len(faces), 10000)]:
+                v0, v1, v2 = verts[face[0]], verts[face[1]], verts[face[2]]
+                surface_area += 0.5 * np.linalg.norm(np.cross(v1-v0, v2-v0))
+            # Sphericity = ratio of surface area of sphere with same volume to actual surface area
+            sphere_sa = (36 * np.pi * total_tumor**2) ** (1/3)
+            sphericity = sphere_sa / (surface_area + 1e-8)
+            if sphericity > 0.7:
+                margins = "Well-defined"
+            elif sphericity > 0.4:
+                margins = "Irregular"
+            else:
+                margins = "Diffuse"
+        except Exception:
+            margins = "Irregular"
+    
+    return {
+        'type': tumor_type,
+        'confidence': round(confidence, 1),
+        'necrotic_voxels': int(necrotic_count),
+        'edema_voxels': int(edema_count),
+        'enhancing_voxels': int(enhancing_count),
+        'total_tumor_voxels': int(total_tumor),
+        'characteristics': {
+            'enhancing': bool(enhancing_count > 0),
+            'necrotic': bool(necrotic_count > 0),
+            'edema': bool(edema_count > 0),
+            'margins': margins,
+        },
+        'location': determine_location(seg),
+    }
+
+
+def determine_location(seg):
+    """Estimate tumor location based on center of mass."""
+    tumor_mask = seg > 0
+    if not np.any(tumor_mask):
+        return "N/A"
+    
+    # Center of mass
+    coords = np.argwhere(tumor_mask)
+    center = coords.mean(axis=0)
+    d, h, w = seg.shape
+    
+    # Normalize to 0-1
+    cz, cy, cx = center[0] / d, center[1] / h, center[2] / w
+    
+    # Simple anatomical mapping (approximate)
+    regions = []
+    if cy < 0.4:
+        regions.append("Superior")
+    elif cy > 0.6:
+        regions.append("Inferior")
+    
+    if cx < 0.45:
+        regions.append("Right Hemisphere")
+    elif cx > 0.55:
+        regions.append("Left Hemisphere")
+    else:
+        regions.append("Midline")
+    
+    if cz < 0.35:
+        regions.append("Frontal")
+    elif cz > 0.65:
+        regions.append("Occipital")
+    elif 0.35 <= cz <= 0.55:
+        regions.append("Parietal")
+    else:
+        regions.append("Temporal")
+    
+    return " ".join(regions)
+
+
+# ─── Main ───────────────────────────────────────────────────
 def main():
     if len(sys.argv) < 2:
-        print(json.dumps({"error": "Missing input folder containing .dcm files"}))
+        print(json.dumps({"error": "Missing input folder"}))
         sys.exit(1)
-
+    
     input_folder = sys.argv[1]
     
+    if not os.path.isdir(input_folder):
+        print(json.dumps({"error": f"Folder not found: {input_folder}"}))
+        sys.exit(1)
+    
     try:
-        # 1. Read DICOM
-        image_3d, reference_dicom = load_dicom_series(input_folder)
+        # 1. Detect and load input files
+        print("Loading input files...", file=sys.stderr)
         
-        # 2. Run U-Net Prediction
-        seg_3d, confidence, tumor_type = predict_tumor(image_3d)
+        # Check for NIfTI files first
+        has_nifti = any(f.lower().endswith(('.nii', '.nii.gz')) 
+                       for f in os.listdir(input_folder))
+        has_dicom = any(f.lower().endswith(('.dcm', '.dicom')) 
+                       for f in os.listdir(input_folder))
         
-        # 3. Save as NIfTI so mesh_generator.py can use it
-        # Try to extract pixel spacing for proper affine scale
         affine = np.eye(4)
-        if hasattr(reference_dicom, 'PixelSpacing'):
-            affine[0, 0] = reference_dicom.PixelSpacing[0]
-            affine[1, 1] = reference_dicom.PixelSpacing[1]
-        if hasattr(reference_dicom, 'SliceThickness'):
-            affine[2, 2] = reference_dicom.SliceThickness
+        image_4ch = None
+        existing_seg = None
+        original_shape = None
+        
+        if has_nifti:
+            image_4ch, existing_seg, affine, original_shape = load_nifti_files(input_folder)
+        elif has_dicom:
+            image_3d, reference_dicom = load_dicom_series(input_folder)
+            if image_3d is None:
+                print(json.dumps({"error": "No valid DICOM files found"}))
+                sys.exit(1)
             
-        flair_img = nib.Nifti1Image(image_3d, affine)
-        seg_img = nib.Nifti1Image(seg_3d, affine)
+            original_shape = image_3d.shape
+            
+            # Build affine from DICOM headers
+            if hasattr(reference_dicom, 'PixelSpacing'):
+                affine[0, 0] = float(reference_dicom.PixelSpacing[0])
+                affine[1, 1] = float(reference_dicom.PixelSpacing[1])
+            if hasattr(reference_dicom, 'SliceThickness'):
+                affine[2, 2] = float(reference_dicom.SliceThickness)
+            
+            # Normalize and duplicate to 4 channels
+            image_3d_norm = normalize(image_3d)
+            image_4ch = np.stack([image_3d_norm, image_3d_norm, image_3d_norm, image_3d_norm], axis=0)
+        else:
+            print(json.dumps({"error": "No valid medical images found (.nii, .nii.gz, .dcm)"}))
+            sys.exit(1)
+        
+        print(f"Volume shape: {original_shape}, Channels: {image_4ch.shape[0]}", file=sys.stderr)
+        
+        # 2. Run U-Net prediction
+        print("Running U-Net inference...", file=sys.stderr)
+        seg_3d, confidence, metadata = predict_tumor(image_4ch, original_shape)
+        
+        # 3. Calculate real volume from voxel dimensions
+        voxel_vol_mm3 = abs(affine[0, 0] * affine[1, 1] * affine[2, 2])
+        if voxel_vol_mm3 == 0:
+            voxel_vol_mm3 = 1.0  # fallback if affine is identity
+        
+        tumor_volume_cm3 = round(metadata['total_tumor_voxels'] * voxel_vol_mm3 / 1000.0, 2)
+        
+        # 4. Save outputs for mesh_generator.py
+        # Save brain volume (use the flair channel or first channel)
+        flair_data = image_4ch[3] if image_4ch.shape[0] == 4 else image_4ch[0]
+        # Denormalize for visualization
+        flair_viz = ((flair_data - flair_data.min()) / (flair_data.max() - flair_data.min() + 1e-8) * 255).astype(np.float32)
+        
+        flair_img = nib.Nifti1Image(flair_viz, affine)
+        seg_img = nib.Nifti1Image(seg_3d.astype(np.float32), affine)
         
         flair_path = os.path.join(input_folder, 'brain_flair.nii')
         seg_path = os.path.join(input_folder, 'tumor_seg.nii')
@@ -87,16 +427,22 @@ def main():
         nib.save(flair_img, flair_path)
         nib.save(seg_img, seg_path)
         
-        # 4. Output JSON metadata to stdout for the Node.js backend to capture
+        print(f"Saved: {flair_path}", file=sys.stderr)
+        print(f"Saved: {seg_path}", file=sys.stderr)
+        
+        # 5. Output JSON metadata to stdout for Node.js backend
         result = {
             "success": True,
             "flair_path": flair_path,
             "seg_path": seg_path,
             "metadata": {
-                "type": tumor_type,
-                "confidence": confidence,
-                "volume_cm3": round(np.sum(seg_3d) * (affine[0,0] * affine[1,1] * affine[2,2]) / 1000, 2),
-                "enhancing": True if tumor_type == 'Meningioma' else False
+                "type": metadata['type'],
+                "confidence": metadata['confidence'],
+                "volume_cm3": tumor_volume_cm3,
+                "location": metadata['location'],
+                "characteristics": metadata['characteristics'],
+                "nearbyRegions": [metadata['location'].split()[-1]] if metadata['location'] != "N/A" else [],
+                "enhancing": metadata['characteristics']['enhancing'] == "Present",
             }
         }
         
@@ -104,8 +450,11 @@ def main():
         sys.exit(0)
         
     except Exception as e:
+        import traceback
+        traceback.print_exc(file=sys.stderr)
         print(json.dumps({"error": str(e)}))
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

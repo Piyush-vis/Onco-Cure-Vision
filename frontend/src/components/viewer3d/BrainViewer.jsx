@@ -2,10 +2,19 @@ import React, { useRef, useMemo } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Environment, ContactShadows, Text, Edges, useGLTF, Center } from '@react-three/drei';
 import * as THREE from 'three';
-import { API_URL } from '../../utils/constants';
+
+
+// Sub-region color mapping for multi-class tumor visualization
+const TUMOR_COLORS = {
+  necrotic:  { color: 0x9632c8, emissive: 0x6a1b9a, label: 'Necrotic Core' },    // Purple
+  edema:     { color: 0x3296ff, emissive: 0x1565c0, label: 'Peritumoral Edema' }, // Blue
+  enhancing: { color: 0xff3b30, emissive: 0xff0000, label: 'Enhancing Tumor' },   // Red
+  tumor:     { color: 0xff3b30, emissive: 0xff0000, label: 'Tumor' },             // Red fallback
+  seg:       { color: 0xff3b30, emissive: 0xff0000, label: 'Segmentation' },       // Red fallback
+};
 
 // Real GLTF Model imported from Node.js backend
-const RealGLTFModel = ({ url, transparency }) => {
+const RealGLTFModel = ({ url, transparency, visibleLayers }) => {
   const { scene } = useGLTF(url);
   
   // Clone scene so we don't mutate the cached one if multiple viewers
@@ -18,21 +27,51 @@ const RealGLTFModel = ({ url, transparency }) => {
           child.material = child.material.clone();
           child.material.transparent = true;
 
-          // AI Tumor Highlights
-          if (child.name.toLowerCase().includes('tumor') || child.name.toLowerCase().includes('seg')) {
-             child.material.color.setHex(0xff3b30);
-             child.material.emissive.setHex(0xff0000);
-             child.material.emissiveIntensity = 0.8;
-             child.material.opacity = 1.0;
+          const name = child.name.toLowerCase();
+          
+          // Check if this mesh is a tumor sub-region
+          let isTumor = false;
+          let tumorStyle = null;
+          
+          for (const [key, style] of Object.entries(TUMOR_COLORS)) {
+            if (name.includes(key)) {
+              isTumor = true;
+              tumorStyle = style;
+              
+              // Check visibility from visibleLayers
+              if (key === 'necrotic' && visibleLayers && !visibleLayers.tumor) {
+                child.visible = false;
+              } else if (key === 'edema' && visibleLayers && !visibleLayers.edema) {
+                child.visible = false;
+              } else if ((key === 'enhancing' || key === 'tumor' || key === 'seg') && visibleLayers && !visibleLayers.tumor) {
+                child.visible = false;
+              } else {
+                child.visible = true;
+              }
+              break;
+            }
+          }
+          
+          if (isTumor && tumorStyle) {
+             child.material.color.setHex(tumorStyle.color);
+             child.material.emissive.setHex(tumorStyle.emissive);
+             child.material.emissiveIntensity = 0.6;
+             child.material.opacity = name.includes('edema') ? 0.5 : 1.0;
              child.material.roughness = 0.2;
-             child.material.metalness = 0.5;
+             child.material.metalness = 0.3;
+             child.material.depthWrite = !name.includes('edema');
+          } else if (name.includes('brain')) {
+             // Brain tissue
+             child.material.opacity = transparency;
+             child.material.depthWrite = false;
+             child.visible = visibleLayers ? visibleLayers.brain : true;
           } else {
-             // Brain / Other tissues
+             // Unknown mesh — treat as brain
              child.material.opacity = transparency;
           }
        }
      });
-  }, [clonedScene, transparency]);
+  }, [clonedScene, transparency, visibleLayers]);
 
   // Adjust position to center it reasonably
   return <primitive object={clonedScene} position={[0, 0, 0]} />;
@@ -160,8 +199,7 @@ const BrainViewer = ({ scanData, transparency, visibleLayers }) => {
   const confidence = scanData?.segmentationData?.confidence || 100;
   
   const glbPath = scanData?.meshFiles?.combined;
-  const BASE_URL = API_URL.replace('/api', '');
-  const glbUrl = glbPath ? `${BASE_URL}${glbPath}` : null;
+  const glbUrl = glbPath || null;
 
   return (
     <div className="w-full h-full relative" style={{ width: '100%', height: '100%' }}>
@@ -178,7 +216,7 @@ const BrainViewer = ({ scanData, transparency, visibleLayers }) => {
         <group position={[0, -2, 0]}>
             {glbUrl ? (
                 <Center>
-                    <RealGLTFModel url={glbUrl} transparency={transparency} />
+                    <RealGLTFModel url={glbUrl} transparency={transparency} visibleLayers={visibleLayers} />
                 </Center>
             ) : (
                 <>

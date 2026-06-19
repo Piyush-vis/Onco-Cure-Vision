@@ -32,6 +32,6 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Dat
 const { errorHandler } = require('./middleware/errorHandler');
 app.use(errorHandler);
 
-const PORT = process.env.PORT || 8880;
+const PORT = 8880;
 
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

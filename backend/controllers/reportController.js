@@ -1,7 +1,7 @@
 const Report = require('../models/Report');
 const Scan = require('../models/Scan');
 const fs = require('fs');
-const { PDFParse } = require('pdf-parse');
+const pdfParse = require('pdf-parse');
 const { generateReports, generateReportsFromText } = require('../services/geminiService');
 
 // @desc      Generate and save report
@@ -92,14 +92,8 @@ exports.generateReportFromPdf = async (req, res, next) => {
     let pdfText = '';
     try {
         const dataBuffer = req.file.buffer || fs.readFileSync(req.file.path);
-        const parser = new PDFParse({ data: dataBuffer });
-        const pdfData = await parser.getText();
+        const pdfData = await pdfParse(dataBuffer);
         pdfText = pdfData.text;
-        
-        // Clean up resources
-        if (typeof parser.destroy === 'function') {
-           await parser.destroy();
-        }
 
         // Optional: delete the file from disk so it doesn't pile up in /uploads
         if (req.file.path) {

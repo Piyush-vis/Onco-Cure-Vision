@@ -2,7 +2,7 @@ const Scan = require('../models/Scan');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const { generateMockSegmentation } = require('../services/mockSegmentationService');
+
 
 // @desc      Upload DICOM and start processing
 // @route     POST /api/scans/upload
@@ -41,34 +41,7 @@ exports.uploadScan = async (req, res, next) => {
   }
 };
 
-// @desc      Upload DICOM and return immediate mock segmentation
-// @route     POST /api/scans/mock-upload
-// @access    Private
-exports.uploadMockScan = async (req, res, next) => {
-  try {
-    let files = req.files;
-    if (!files || files.length === 0) {
-      if (req.file) files = [req.file];
-      else return res.status(400).json({
-        success: false,
-        error: 'No files received.',
-      });
-    }
 
-    const mockResult = await generateMockSegmentation(files[0].path);
-
-    res.status(200).json({
-      success: true,
-      ...mockResult,
-    });
-  } catch (err) {
-    console.error('uploadMockScan error:', err);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to generate mock segmentation.',
-    });
-  }
-};
 
 // @desc      Get all scans for current user
 // @route     GET /api/scans
@@ -173,7 +146,7 @@ async function processScan(scanId, files) {
       console.log(`[Segmentation] Triggering ML Inference (U-Net) on DICOMs...`);
       
       await new Promise((resolve, reject) => {
-        const pythonExecutable = 'C:\\Users\\pvgam\\OneDrive\\Documents\\python_projects\\hackathon\\venv\\Scripts\\python.exe';
+        const pythonExecutable = process.env.PYTHON_EXECUTABLE || 'python';
         const pyProcess = spawn(pythonExecutable, [predictScript, tempDir]);
         
         let outData = '';
@@ -207,7 +180,42 @@ async function processScan(scanId, files) {
         });
       });
     } else if (hasNifti) {
-      console.log(`[Segmentation] NIfTI files detected — skipping ML inference, going directly to mesh generation.`);
+      console.log(`[Segmentation] NIfTI files detected — running ML inference...`);
+      
+      await new Promise((resolve, reject) => {
+        const pythonExecutable = process.env.PYTHON_EXECUTABLE || 'python';
+        const pyProcess = spawn(pythonExecutable, [predictScript, tempDir]);
+        
+        let outData = '';
+        
+        pyProcess.stdout.on('data', (data) => {
+            const chunk = data.toString();
+            outData += chunk;
+            console.log(`[U-Net]: ${chunk.trim()}`);
+        });
+        
+        pyProcess.stderr.on('data', (data) => {
+            console.error(`[Python U-Net Err]: ${data.toString().trim()}`);
+        });
+        
+        pyProcess.on('close', (code) => {
+            if (code === 0) {
+                try {
+                    const lines = outData.split('\n');
+                    for (let line of lines) {
+                        line = line.trim();
+                        if (line.startsWith('{')) {
+                            const parsed = JSON.parse(line);
+                            if (parsed.metadata) mlMetadata = parsed.metadata;
+                        }
+                    }
+                } catch(e) { /* ignore JSON parse error */ }
+                resolve();
+            } else {
+                reject(new Error(`U-Net ML script exited with code ${code}`));
+            }
+        });
+      });
     } else {
       throw new Error('Unsupported file type. Please upload .nii, .nii.gz, or .dcm files.');
     }
@@ -224,7 +232,7 @@ async function processScan(scanId, files) {
     await new Promise((resolve, reject) => {
 
       // Use the specific python environment provided by the user
-      const pythonExecutable = 'C:\\Users\\pvgam\\OneDrive\\Documents\\python_projects\\hackathon\\venv\\Scripts\\python.exe';
+      const pythonExecutable = process.env.PYTHON_EXECUTABLE || 'python';
       const pyProcess = spawn(pythonExecutable, [meshScript, tempDir, outputGlbPath]);
       
       pyProcess.stdout.on('data', (data) => {
@@ -247,16 +255,16 @@ async function processScan(scanId, files) {
     scan.status = 'completed';
     // Provide segmentation report data driven from the ML python script output
     scan.segmentationData = {
-        tumorVolume: mlMetadata?.volume_cm3 || 15.2,
-        location: "Determined from AI Mask",
-        confidence: mlMetadata?.confidence || 90.5,
+        tumorVolume: mlMetadata?.volume_cm3 ?? null,
+        location: mlMetadata?.location || null,
+        confidence: mlMetadata?.confidence ?? null,
         characteristics: {
-            enhancing: mlMetadata?.enhancing ?? true,
-            necrotic: false,
-            edema: true,
-            margins: mlMetadata?.type ? `Typical for ${mlMetadata.type}` : "Irregular"
+            enhancing: mlMetadata?.characteristics?.enhancing ?? null,
+            necrotic: mlMetadata?.characteristics?.necrotic ?? null,
+            edema: mlMetadata?.characteristics?.edema ?? null,
+            margins: mlMetadata?.characteristics?.margins || null
         },
-        nearbyRegions: ["Cortex"]
+        nearbyRegions: mlMetadata?.nearbyRegions || []
     };
     // Include the generated GLB
     scan.meshFiles = {
