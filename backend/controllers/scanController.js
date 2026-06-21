@@ -87,7 +87,7 @@ exports.getScan = async (req, res, next) => {
 // @access    Private
 exports.getScanStatus = async (req, res, next) => {
   try {
-    const scan = await Scan.findById(req.params.id, 'status segmentationData meshFiles uploadDate fileName');
+    const scan = await Scan.findById(req.params.id, 'status segmentationData meshFiles sliceData uploadDate fileName');
 
     if (!scan) {
       return res.status(404).json({ success: false, error: 'Scan not found' });
@@ -252,7 +252,7 @@ async function processScan(scanId, files) {
       });
     });
 
-    scan.status = 'completed';
+
     // Provide segmentation report data driven from the ML python script output
     scan.segmentationData = {
         tumorVolume: mlMetadata?.volume_cm3 ?? null,
@@ -271,8 +271,55 @@ async function processScan(scanId, files) {
         combined: `/uploads/${outputGlbFile}`
     };
 
+    // Generate 2D slice images (raw + segmentation overlay + Grad-CAM heatmap)
+    try {
+      console.log(`[Slices] Generating 2D slice images for scan ${scanId}...`);
+      const sliceScript = path.join(__dirname, '..', '..', 'segmentation-service', 'generate_slices.py');
+      
+      await new Promise((resolve, reject) => {
+        const pythonExe = process.env.PYTHON_EXECUTABLE || 'python';
+        const sliceProcess = spawn(pythonExe, [sliceScript, tempDir, '--num-slices', '20']);
+        let sliceOut = '';
+        
+        sliceProcess.stdout.on('data', (data) => {
+          sliceOut += data.toString();
+        });
+        sliceProcess.stderr.on('data', (data) => {
+          console.log(`[Slices]: ${data.toString().trim()}`);
+        });
+        sliceProcess.on('close', (code) => {
+          if (code === 0) {
+            try {
+              const lines = sliceOut.split('\n');
+              for (let line of lines) {
+                line = line.trim();
+                if (line.startsWith('{')) {
+                  const parsed = JSON.parse(line);
+                  if (parsed.success) {
+                    scan.sliceData = {
+                      available: true,
+                      hasHeatmap: parsed.hasHeatmap || false,
+                      totalSlices: parsed.totalSlices || 0,
+                      basePath: `/uploads/${scanId}/slices`,
+                    };
+                  }
+                }
+              }
+            } catch(e) { /* ignore */ }
+            resolve();
+          } else {
+            console.error(`[Slices] Script exited with code ${code}`);
+            resolve(); // non-fatal — scan still completes
+          }
+        });
+      });
+    } catch (sliceErr) {
+      console.error(`[Slices] Failed (non-fatal):`, sliceErr.message);
+    }
+
+    scan.status = 'completed';
     await scan.save();
-    console.log(`[Segmentation] Scan ${scanId} completed. Generated GLB saved.`);
+    console.log(`[Segmentation] Scan ${scanId} completed. GLB + slices saved.`);
     
     // Optional: Clean up tempdir
     // fs.rmSync(tempDir, { recursive: true, force: true });

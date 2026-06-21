@@ -32,6 +32,12 @@ const ScanSchema = new mongoose.Schema({
     brain: String, // path or url to mesh
     tumor: String,
     combined: String
+  },
+  sliceData: {
+    available: { type: Boolean, default: false },
+    hasHeatmap: { type: Boolean, default: false },
+    totalSlices: Number,
+    basePath: String
   }
 });
 

@@ -5,6 +5,7 @@ import ControlPanel from './ControlPanel';
 import HistoryPanel from './HistoryPanel';
 import AnalyticsPanel from './AnalyticsPanel';
 import BrainViewer from '../viewer3d/BrainViewer';
+import SliceViewer from '../viewer3d/SliceViewer';
 import ReportPanel from '../reports/ReportPanel';
 import { getCurrentUser, logout } from '../../services/authService';
 import { getScan } from '../../services/segmentationService';
@@ -13,6 +14,7 @@ import api from '../../services/api';
 
 const Dashboard = () => {
   const [activeTab, setActiveTab] = useState('upload'); // 'upload', 'viewer', 'history'
+  const [viewerMode, setViewerMode] = useState('3d'); // '3d' or '2d'
   const [currentScanId, setCurrentScanId] = useState(null);
   const [scanData, setScanData] = useState(null);
   const [transparency, setTransparency] = useState(0.3);
@@ -188,19 +190,43 @@ const Dashboard = () => {
                 />
              </div>
              
-             {/* Center Panel: 3D Render */}
-             <div className="flex-1 bg-black relative flex flex-col items-center justify-center">
-                {scanData ? (
+             {/* Center Panel: 3D/2D Viewer */}
+             <div className="flex-1 bg-black relative flex flex-col">
+                {/* View Mode Toggle */}
+                <div className="absolute top-3 right-3 z-20 flex bg-slate-800/90 backdrop-blur-sm rounded-lg border border-slate-600 p-0.5 shadow-lg">
+                  <button
+                    onClick={() => setViewerMode('3d')}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${viewerMode === '3d' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+                  >
+                    3D Model
+                  </button>
+                  <button
+                    onClick={() => setViewerMode('2d')}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${viewerMode === '2d' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+                  >
+                    2D Slices
+                  </button>
+                </div>
+
+                {viewerMode === '3d' ? (
+                  scanData ? (
                     <BrainViewer 
                       scanData={scanData} 
                       transparency={transparency} 
                       visibleLayers={visibleLayers} 
                     />
-                ) : (
-                    <div className="text-slate-500 flex flex-col items-center">
+                  ) : (
+                    <div className="flex-1 flex items-center justify-center">
+                      <div className="text-slate-500 flex flex-col items-center">
                         <div className="w-16 h-16 border-4 border-slate-700 border-t-indigo-500 rounded-full animate-spin mb-4"></div>
                         <p>Loading rendering context...</p>
+                      </div>
                     </div>
+                  )
+                ) : (
+                  <div className="flex-1 p-3 pt-12">
+                    <SliceViewer scanData={scanData} />
+                  </div>
                 )}
              </div>
 

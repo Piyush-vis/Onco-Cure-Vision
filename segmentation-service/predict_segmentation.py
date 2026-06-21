@@ -168,6 +168,7 @@ def load_nifti_files(folder_path):
 def predict_tumor(image_4ch, original_shape):
     """
     Run real U-Net inference on a 4-channel 3D MRI volume.
+    Also computes Grad-CAM heatmap from the bottleneck layer.
     
     Args:
         image_4ch: numpy array (4, D, H, W) — 4 MRI modalities, already normalized
@@ -177,6 +178,7 @@ def predict_tumor(image_4ch, original_shape):
         seg_3d: (D, H, W) segmentation mask with BraTS labels (0,1,2,4)
         confidence: float 0-100
         metadata: dict with tumor characteristics
+        gradcam: (D, H, W) Grad-CAM heatmap normalized to [0,1], or None
     """
     model = load_model()
     
@@ -188,7 +190,6 @@ def predict_tumor(image_4ch, original_shape):
     needs_resize = (d != target or h != target or w != target)
     
     if needs_resize:
-        # Resize each channel
         resized_channels = []
         for ch in range(4):
             resized_channels.append(zoom(image_4ch[ch], scale_factors, order=1))
@@ -199,7 +200,7 @@ def predict_tumor(image_4ch, original_shape):
     # Prepare tensor: (1, 4, D, H, W)
     input_tensor = torch.tensor(input_vol, dtype=torch.float32).unsqueeze(0).to(DEVICE)
     
-    # Run inference
+    # --- Standard inference (no_grad) for segmentation ---
     with torch.no_grad():
         with torch.amp.autocast(device_type='cuda' if DEVICE.type == 'cuda' else 'cpu'):
             output = model(input_tensor)  # (1, 4, 128, 128, 128)
@@ -207,17 +208,91 @@ def predict_tumor(image_4ch, original_shape):
         probs = torch.softmax(output, dim=1)  # (1, 4, 128, 128, 128)
         pred = torch.argmax(probs, dim=1).squeeze(0)  # (128, 128, 128)
         
-        # Get confidence: mean probability of predicted tumor voxels
+        # Get confidence
         tumor_mask_pred = (pred > 0)
         if tumor_mask_pred.sum() > 0:
-            # Max probability for each predicted tumor voxel
-            tumor_probs = probs[0, 1:, :, :, :]  # (3, D, H, W) — 3 tumor classes
-            max_probs = tumor_probs.max(dim=0)[0]  # (D, H, W)
+            tumor_probs = probs[0, 1:, :, :, :]
+            max_probs = tumor_probs.max(dim=0)[0]
             confidence = float(max_probs[tumor_mask_pred].mean().item()) * 100
         else:
             confidence = 0.0
     
     seg_np = pred.cpu().numpy().astype(np.uint8)
+    
+    # --- Grad-CAM computation ---
+    gradcam_np = None
+    try:
+        print("Computing Grad-CAM heatmap...", file=sys.stderr)
+        # Re-run with gradients enabled, hooking into enc4 (bottleneck)
+        activations = {}
+        gradients = {}
+        
+        def save_activation(name):
+            def hook(module, input, output):
+                activations[name] = output.detach()
+            return hook
+        
+        def save_gradient(name):
+            def hook(module, grad_input, grad_output):
+                gradients[name] = grad_output[0].detach()
+            return hook
+        
+        # Register hooks on the bottleneck encoder
+        handle_fwd = model.enc4.register_forward_hook(save_activation('enc4'))
+        handle_bwd = model.enc4.register_full_backward_hook(save_gradient('enc4'))
+        
+        input_grad = input_tensor.clone().requires_grad_(False)
+        input_grad = torch.tensor(input_vol, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+        input_grad.requires_grad_(True)
+        
+        model.zero_grad()
+        with torch.amp.autocast(device_type='cuda' if DEVICE.type == 'cuda' else 'cpu'):
+            output_grad = model(input_grad)
+        
+        # Target: sum of all tumor class logits (classes 1,2,3) where tumor was predicted
+        tumor_score = output_grad[0, 1:, :, :, :].sum()
+        tumor_score.backward()
+        
+        handle_fwd.remove()
+        handle_bwd.remove()
+        
+        if 'enc4' in activations and 'enc4' in gradients:
+            act = activations['enc4']   # (1, 256, D/8, H/8, W/8)
+            grad = gradients['enc4']    # (1, 256, D/8, H/8, W/8)
+            
+            # Global average pooling of gradients
+            weights = grad.mean(dim=[2, 3, 4], keepdim=True)  # (1, 256, 1, 1, 1)
+            
+            # Weighted combination
+            cam = (weights * act).sum(dim=1, keepdim=True)  # (1, 1, D/8, H/8, W/8)
+            cam = torch.relu(cam)
+            
+            # Upsample to input size
+            cam = torch.nn.functional.interpolate(
+                cam, size=(target, target, target), mode='trilinear', align_corners=False
+            )
+            cam = cam.squeeze().cpu().numpy()
+            
+            # Normalize to [0, 1]
+            cam_min, cam_max = cam.min(), cam.max()
+            if cam_max - cam_min > 1e-8:
+                cam = (cam - cam_min) / (cam_max - cam_min)
+            else:
+                cam = np.zeros_like(cam)
+            
+            gradcam_np = cam
+            
+            # Resize back to original shape
+            if needs_resize:
+                inv_scale = [d / target, h / target, w / target]
+                gradcam_np = zoom(gradcam_np, inv_scale, order=1)
+            
+            print("Grad-CAM computed successfully.", file=sys.stderr)
+        else:
+            print("Grad-CAM: hooks didn't capture data.", file=sys.stderr)
+    except Exception as e:
+        print(f"Grad-CAM failed (non-fatal): {e}", file=sys.stderr)
+        gradcam_np = None
     
     # Resize segmentation back to original volume size
     if needs_resize:
@@ -244,7 +319,7 @@ def predict_tumor(image_4ch, original_shape):
     # Compute metadata from segmentation
     metadata = analyze_segmentation(brats_seg, confidence)
     
-    return brats_seg, confidence, metadata
+    return brats_seg, confidence, metadata, gradcam_np
 
 
 def analyze_segmentation(seg, confidence):
@@ -403,7 +478,7 @@ def main():
         
         # 2. Run U-Net prediction
         print("Running U-Net inference...", file=sys.stderr)
-        seg_3d, confidence, metadata = predict_tumor(image_4ch, original_shape)
+        seg_3d, confidence, metadata, gradcam = predict_tumor(image_4ch, original_shape)
         
         # 3. Calculate real volume from voxel dimensions
         voxel_vol_mm3 = abs(affine[0, 0] * affine[1, 1] * affine[2, 2])
@@ -430,11 +505,21 @@ def main():
         print(f"Saved: {flair_path}", file=sys.stderr)
         print(f"Saved: {seg_path}", file=sys.stderr)
         
+        # Save Grad-CAM heatmap if computed
+        has_gradcam = False
+        if gradcam is not None:
+            gradcam_path = os.path.join(input_folder, 'gradcam_heatmap.nii')
+            gradcam_img = nib.Nifti1Image(gradcam.astype(np.float32), affine)
+            nib.save(gradcam_img, gradcam_path)
+            print(f"Saved: {gradcam_path}", file=sys.stderr)
+            has_gradcam = True
+        
         # 5. Output JSON metadata to stdout for Node.js backend
         result = {
             "success": True,
             "flair_path": flair_path,
             "seg_path": seg_path,
+            "has_gradcam": has_gradcam,
             "metadata": {
                 "type": metadata['type'],
                 "confidence": metadata['confidence'],
