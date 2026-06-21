@@ -241,13 +241,12 @@ def predict_tumor(image_4ch, original_shape):
         handle_fwd = model.enc4.register_forward_hook(save_activation('enc4'))
         handle_bwd = model.enc4.register_full_backward_hook(save_gradient('enc4'))
         
-        input_grad = input_tensor.clone().requires_grad_(False)
         input_grad = torch.tensor(input_vol, dtype=torch.float32).unsqueeze(0).to(DEVICE)
         input_grad.requires_grad_(True)
         
         model.zero_grad()
-        with torch.amp.autocast(device_type='cuda' if DEVICE.type == 'cuda' else 'cpu'):
-            output_grad = model(input_grad)
+        # Run WITHOUT autocast — mixed precision breaks backward on CPU
+        output_grad = model(input_grad.float())
         
         # Target: sum of all tumor class logits (classes 1,2,3) where tumor was predicted
         tumor_score = output_grad[0, 1:, :, :, :].sum()

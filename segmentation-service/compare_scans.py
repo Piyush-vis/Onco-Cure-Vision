@@ -92,7 +92,8 @@ def make_side_by_side(flair_old_slice, seg_old_slice, flair_new_slice, seg_new_s
         gray = normalize_to_uint8(flair_s)
         bg = Image.fromarray(gray, mode='L').resize(size, Image.BILINEAR).convert('RGBA')
         seg_r = np.array(Image.fromarray(seg_s.astype(np.uint8), mode='L').resize(size, Image.NEAREST))
-        ov = np.zeros((*size, 4), dtype=np.uint8)
+        # seg_r shape is (height, width) — use that for overlay array
+        ov = np.zeros((*seg_r.shape, 4), dtype=np.uint8)
         for label, color in SEG_COLORS.items():
             mask = seg_r == label
             if mask.any():
