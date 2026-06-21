@@ -9,7 +9,7 @@ const { generateReports, generateReportsFromText } = require('../services/gemini
 // @access    Private (Doctor only)
 exports.generateReport = async (req, res, next) => {
   try {
-    const { scanId } = req.body;
+    const { scanId, language } = req.body;
 
     // Verify scan exists
     const scan = await Scan.findById(scanId);
@@ -28,14 +28,15 @@ exports.generateReport = async (req, res, next) => {
     }
     
     // Call Gemini API
-    const reports = await generateReports(scan.segmentationData);
+    const reports = await generateReports(scan.segmentationData, language);
 
     // Save to DB
     const report = await Report.create({
       scan: scanId,
       user: scan.user,
       doctorReport: reports.doctorReport,
-      patientReport: reports.patientReport
+      patientReport: reports.patientReport,
+      language: language || 'English'
     });
 
     res.status(201).json({
@@ -73,7 +74,7 @@ exports.getReport = async (req, res, next) => {
 // @access    Private (Doctor only)
 exports.generateReportFromPdf = async (req, res, next) => {
   try {
-    const { scanId } = req.body;
+    const { scanId, language } = req.body;
 
     if (!req.file) {
       return res.status(400).json({ success: false, error: 'Please upload a PDF file' });
@@ -111,13 +112,14 @@ exports.generateReportFromPdf = async (req, res, next) => {
     }
 
     // Call Gemini API specifically for text
-    const reports = await generateReportsFromText(pdfText);
+    const reports = await generateReportsFromText(pdfText, language);
 
     // Save to DB
     const reportData = {
       user: req.user.id,
       doctorReport: reports.doctorReport,
-      patientReport: reports.patientReport
+      patientReport: reports.patientReport,
+      language: language || 'English'
     };
     
     if (scan) {

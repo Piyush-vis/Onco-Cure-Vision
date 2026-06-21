@@ -61,12 +61,20 @@ Be reassuring but accurate. Avoid medical jargon. Explain:
 - Why confidence level matters
 - General next steps (without giving medical advice)
 
-Keep it compassionate and clear.`;
+Keep it compassionate and clear.
 
-exports.generateReports = async (runData) => {
+{languageInstruction}`;
+
+const getLanguageInstruction = (language) => {
+  if (!language || language === 'English') return '';
+  return `IMPORTANT: Generate this ENTIRE report in ${language}. Use culturally appropriate, simple terms in ${language}. Do NOT include any English text.`;
+};
+
+exports.generateReports = async (runData, language) => {
   try {
     const doctorPrompt = populatePrompt(DOCTOR_PROMPT_TEMPLATE, runData);
-    const patientPrompt = populatePrompt(PATIENT_PROMPT_TEMPLATE, runData);
+    let patientPrompt = populatePrompt(PATIENT_PROMPT_TEMPLATE, runData);
+    patientPrompt = patientPrompt.replace('{languageInstruction}', getLanguageInstruction(language));
 
     const modelParams = {
         model: process.env.GEMINI_MODEL || 'gemini-1.5-flash',
@@ -114,15 +122,18 @@ Based on the text below, extract and clearly explain:
 
 Be reassuring but accurate. Avoid medical jargon. Do NOT give direct medical advice, but explain what the doctor will likely consider next.
 
+{languageInstruction}
+
 Transcribed Report Text:
 """
 {text}
 """`;
 
-exports.generateReportsFromText = async (pdfText) => {
+exports.generateReportsFromText = async (pdfText, language) => {
   try {
     const doctorPrompt = TEXT_DOCTOR_PROMPT.replace('{text}', pdfText);
-    const patientPrompt = TEXT_PATIENT_PROMPT.replace('{text}', pdfText);
+    let patientPrompt = TEXT_PATIENT_PROMPT.replace('{text}', pdfText);
+    patientPrompt = patientPrompt.replace('{languageInstruction}', getLanguageInstruction(language));
 
     const modelParams = {
         model: process.env.GEMINI_MODEL || 'gemini-1.5-flash',

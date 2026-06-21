@@ -1,6 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { generateReport, generateReportFromPdf } from '../../services/segmentationService';
-import { FiFileText, FiRefreshCcw, FiChevronDown, FiChevronUp, FiDownload, FiUploadCloud } from 'react-icons/fi';
+import { FiFileText, FiRefreshCcw, FiChevronDown, FiChevronUp, FiDownload, FiUploadCloud, FiGlobe } from 'react-icons/fi';
+
+const LANGUAGES = [
+  'English', 'Hindi', 'Spanish', 'French', 'German', 'Chinese',
+  'Arabic', 'Japanese', 'Portuguese', 'Korean', 'Tamil', 'Bengali',
+  'Marathi', 'Telugu', 'Urdu', 'Gujarati', 'Kannada', 'Russian',
+  'Italian', 'Dutch'
+];
 
 const ReportPanel = ({ scanData, userRole, scanId }) => {
   const [reports, setReports] = useState(null);
@@ -8,14 +15,15 @@ const ReportPanel = ({ scanData, userRole, scanId }) => {
   const [activeTab, setActiveTab] = useState(userRole === 'doctor' ? 'clinical' : 'patient');
   const [expandedSection, setExpandedSection] = useState('characteristics');
   const [selectedFile, setSelectedFile] = useState(null);
+  const [language, setLanguage] = useState('English');
 
   const handleGenerate = async () => {
     if (!selectedFile) return;
     
     try {
       setLoading(true);
-      // Pass null as scanId if this is a standalone PDF
-      const res = await generateReportFromPdf(scanId || null, selectedFile);
+      // Pass language for patient report translation
+      const res = await generateReportFromPdf(scanId || null, selectedFile, language);
       if (res.success) {
         setReports(res.data);
       }
@@ -66,6 +74,14 @@ const ReportPanel = ({ scanData, userRole, scanId }) => {
       <div className="p-6 flex-1 flex flex-col h-full overflow-hidden">
         {reports ? (
             <div className="flex flex-col h-full overflow-hidden">
+                {/* Language badge */}
+                {reports.language && reports.language !== 'English' && (
+                  <div className="flex items-center gap-2 mb-3 px-3 py-1.5 bg-indigo-900/40 border border-indigo-500/30 rounded-lg w-fit">
+                    <FiGlobe className="text-indigo-400 text-sm" />
+                    <span className="text-xs text-indigo-300 font-medium">Patient report in {reports.language}</span>
+                  </div>
+                )}
+
                 {/* Tabs */}
                 <div className="flex space-x-2 bg-slate-800 p-1 rounded-lg mb-4 shrink-0">
                     {userRole === 'doctor' && (
@@ -110,13 +126,41 @@ const ReportPanel = ({ scanData, userRole, scanId }) => {
                       </label>
                   </div>
 
+                  {/* Language Selector */}
+                  <div className="w-full mb-4">
+                      <label className="flex items-center gap-2 text-sm text-slate-400 mb-2">
+                        <FiGlobe className="text-indigo-400" />
+                        Patient Report Language
+                      </label>
+                      <select
+                        value={language}
+                        onChange={(e) => setLanguage(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-600 text-slate-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent cursor-pointer appearance-none"
+                        style={{
+                          backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`,
+                          backgroundPosition: 'right 0.5rem center',
+                          backgroundRepeat: 'no-repeat',
+                          backgroundSize: '1.5em 1.5em',
+                        }}
+                      >
+                        {LANGUAGES.map((lang) => (
+                          <option key={lang} value={lang}>{lang}</option>
+                        ))}
+                      </select>
+                      {language !== 'English' && (
+                        <p className="text-xs text-indigo-400 mt-1.5">
+                          ✨ Clinical report stays in English • Patient report will be in {language}
+                        </p>
+                      )}
+                  </div>
+
                   <button 
                      onClick={handleGenerate} 
                      disabled={loading || !selectedFile} 
                      className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-700 disabled:text-slate-500 font-medium py-3 rounded-lg flex justify-center items-center transition-all"
                   >
                       {loading ? (
-                          <><FiRefreshCcw className="animate-spin mr-2" /> Parsing PDF...</>
+                          <><FiRefreshCcw className="animate-spin mr-2" /> Generating in {language}...</>
                       ) : (
                           <>Generate Report with AI</>
                       )}

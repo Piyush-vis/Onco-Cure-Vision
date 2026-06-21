@@ -54,16 +54,17 @@ export const getUserScans = async () => {
 };
 
 // Generate AI report for a scan (Doctor only)
-export const generateReport = async (scanId) => {
-  const response = await api.post('/reports/generate', { scanId });
+export const generateReport = async (scanId, language) => {
+  const response = await api.post('/reports/generate', { scanId, language });
   return response.data;
 };
 
 // Generate AI report from uploaded PDF
-export const generateReportFromPdf = async (scanId, pdfFile) => {
+export const generateReportFromPdf = async (scanId, pdfFile, language) => {
   const formData = new FormData();
   formData.append('scanId', scanId);
   formData.append('reportPdf', pdfFile);
+  if (language) formData.append('language', language);
 
   const response = await api.post('/reports/generate-pdf', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },

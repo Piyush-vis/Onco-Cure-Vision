@@ -13,6 +13,10 @@ const ReportSchema = new mongoose.Schema({
   },
   doctorReport: String,
   patientReport: String,
+  language: {
+    type: String,
+    default: 'English'
+  },
   createdAt: {
     type: Date,
     default: Date.now
