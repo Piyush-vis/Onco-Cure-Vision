@@ -24,6 +24,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/scans', require('./routes/scanRoutes'));
 app.use('/api/reports', require('./routes/reportRoutes'));
+app.use('/api/analytics', require('./routes/analyticsRoutes'));
 
 // Health check
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));

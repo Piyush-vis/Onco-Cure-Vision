@@ -3,6 +3,7 @@ import { Navigate, useNavigate } from 'react-router-dom';
 import UploadSection from './UploadSection';
 import ControlPanel from './ControlPanel';
 import HistoryPanel from './HistoryPanel';
+import AnalyticsPanel from './AnalyticsPanel';
 import BrainViewer from '../viewer3d/BrainViewer';
 import ReportPanel from '../reports/ReportPanel';
 import { getCurrentUser, logout } from '../../services/authService';
@@ -114,6 +115,12 @@ const Dashboard = () => {
             >
               AI PDF Report
             </button>
+            <button 
+               onClick={() => setActiveTab('analytics')}
+               className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'analytics' ? 'bg-slate-800 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-800/50'}`}
+            >
+              Analytics
+            </button>
           </nav>
         </div>
         
@@ -215,6 +222,12 @@ const Dashboard = () => {
              <div className="w-full max-w-3xl h-[80vh] bg-slate-800 rounded-xl shadow-2xl border border-slate-700 flex flex-col overflow-hidden">
                 <ReportPanel scanData={null} userRole={user?.role} scanId={null} />
              </div>
+          </div>
+        )}
+
+        {activeTab === 'analytics' && (
+          <div className="h-full bg-slate-900 p-8 overflow-y-auto custom-scrollbar absolute inset-0">
+            <AnalyticsPanel />
           </div>
         )}
       </main>
