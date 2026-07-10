@@ -19,7 +19,7 @@ An AI-powered neuroradiology platform that segments brain tumors from MRI scans 
 
 ---
 
-## 🧠 ML Model — 3D U-Net
+## 🧠 ML Model — 3D U-Net Algorithm 
 
 ### Architecture
 The segmentation model is a **3D U-Net** designed for volumetric brain tumor segmentation:
