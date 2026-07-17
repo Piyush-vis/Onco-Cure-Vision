@@ -11,7 +11,7 @@ An AI-powered neuroradiology platform that segments brain tumors from MRI scans 
   - 🔴 **Enhancing Tumor** (red)
   - 🧠 **Brain** (grey, transparent)
   - Each sub-region can be toggled on/off independently.
-- **AI-Powered MRI Report Analysis**: Upload a standard MRI PDF report to instantly generate two distinct summaries using Google's Gemini AI:
+- **AI-Powered MRI Report Analysis**: Upload a standard MRI PDF report to instantly generate two distinct summaries using Gemini AI:
   - 🩺 **Clinical Report**: A highly structured, professional summary with findings, impressions, and recommendations tailored for neurosurgeons and oncologists.
   - 🫂 **Patient-Friendly Report**: A compassionate, jargon-free explanation that translates medical terms into simple language, including relatable size comparisons (e.g., "the size of a grape").
 - **Real-Time Tumor Analysis**: Extracts critical tumor characteristics including volume ($cm^3$), anatomical location, confidence scores, tumor type classification (HGG/LGG/GBM), and morphological features.
