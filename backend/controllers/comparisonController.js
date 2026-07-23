@@ -52,8 +52,17 @@ exports.compareScans = async (req, res) => {
     const compareScript = path.join(__dirname, '..', '..', 'segmentation-service', 'compare_scans.py');
     const pythonExe = process.env.PYTHON_EXECUTABLE || 'python';
 
+    // Days between the two scans — drives RANO growth kinetics + pseudoprogression timing.
+    const intervalDays = Math.max(
+      0,
+      Math.round((new Date(newScan.uploadDate) - new Date(oldScan.uploadDate)) / (1000 * 60 * 60 * 24))
+    );
+
     const result = await new Promise((resolve, reject) => {
-      const proc = spawn(pythonExe, [compareScript, oldFolder, newFolder, outputFolder, '--num-slices', '20']);
+      const proc = spawn(pythonExe, [
+        compareScript, oldFolder, newFolder, outputFolder,
+        '--num-slices', '20', '--interval-days', String(intervalDays),
+      ]);
       let stdout = '';
 
       proc.stdout.on('data', (data) => {
@@ -116,7 +125,12 @@ exports.compareScans = async (req, res) => {
         delta: {
           volumeChangeCm3,
           volumeChangePct,
+          intervalDays,
           assessment: volumeChangePct < -10 ? 'Improving' : (volumeChangePct > 10 ? 'Progressing' : 'Stable'),
+          // Clinical response assessment (P2)
+          rano: result.metrics?.rano || null,
+          growth: result.metrics?.growth || null,
+          pseudoprogression: result.metrics?.pseudoprogression || null,
           voxelMetrics: result.metrics || {},
         },
         comparisonImages: {

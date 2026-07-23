@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { FiGrid, FiEye, FiActivity, FiPlay, FiPause, FiChevronLeft, FiChevronRight } from 'react-icons/fi';
+import { FiGrid, FiEye, FiActivity, FiPlay, FiPause, FiChevronLeft, FiChevronRight, FiHelpCircle } from 'react-icons/fi';
 
 const PLANES = [
   { id: 'axial', label: 'Axial', icon: '⬡' },
@@ -11,6 +11,7 @@ const VIEW_MODES = [
   { id: 'raw', label: 'Raw MRI', icon: FiGrid, color: 'text-slate-300', desc: 'Original FLAIR scan' },
   { id: 'seg', label: 'Segmentation', icon: FiEye, color: 'text-indigo-400', desc: 'AI tumor overlay' },
   { id: 'heatmap', label: 'Grad-CAM', icon: FiActivity, color: 'text-amber-400', desc: 'AI attention map' },
+  { id: 'uncertainty', label: 'Uncertainty', icon: FiHelpCircle, color: 'text-orange-400', desc: 'Where the model is unsure' },
 ];
 
 const SliceViewer = ({ scanData }) => {
@@ -78,6 +79,7 @@ const SliceViewer = ({ scanData }) => {
     if (viewMode === 'raw') files = planeData.raw;
     else if (viewMode === 'seg') files = planeData.seg;
     else if (viewMode === 'heatmap') files = planeData.heatmap;
+    else if (viewMode === 'uncertainty') files = planeData.uncertainty;
 
     if (!files || files.length === 0) return null;
     const idx = Math.min(sliceIndex, files.length - 1);
@@ -112,6 +114,7 @@ const SliceViewer = ({ scanData }) => {
   const maxSlice = planeData ? planeData.count - 1 : 0;
   const imageUrl = getImageUrl();
   const hasHeatmap = manifest?.hasHeatmap;
+  const hasUncertainty = manifest?.hasUncertainty;
 
   return (
     <div className="bg-slate-800 rounded-xl border border-slate-700 flex flex-col h-full overflow-hidden">
@@ -148,7 +151,8 @@ const SliceViewer = ({ scanData }) => {
         <div className="flex gap-1">
           {VIEW_MODES.map(mode => {
             const Icon = mode.icon;
-            const disabled = mode.id === 'heatmap' && !hasHeatmap;
+            const disabled = (mode.id === 'heatmap' && !hasHeatmap) ||
+                             (mode.id === 'uncertainty' && !hasUncertainty);
             return (
               <button
                 key={mode.id}
@@ -161,7 +165,7 @@ const SliceViewer = ({ scanData }) => {
                       ? 'bg-slate-800 text-slate-600 cursor-not-allowed'
                       : 'bg-slate-700/50 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
                 }`}
-                title={disabled ? 'Grad-CAM not available' : mode.desc}
+                title={disabled ? `${mode.label} not available` : mode.desc}
               >
                 <Icon className={`text-xs ${viewMode === mode.id ? mode.color : ''}`} />
                 {mode.label}
@@ -207,6 +211,18 @@ const SliceViewer = ({ scanData }) => {
             }}></div>
             <span className="text-[10px] text-red-400">High</span>
             <span className="text-[10px] text-slate-400 ml-1">AI Attention</span>
+          </div>
+        )}
+
+        {/* Legend for uncertainty */}
+        {viewMode === 'uncertainty' && (
+          <div className="absolute bottom-3 left-3 flex items-center gap-2">
+            <span className="text-[10px] text-slate-400">Confident</span>
+            <div className="w-24 h-2 rounded-full" style={{
+              background: 'linear-gradient(to right, #000004, #51127c, #b73779, #fc8961, #fcfdbf)'
+            }}></div>
+            <span className="text-[10px] text-yellow-200">Unsure</span>
+            <span className="text-[10px] text-slate-400 ml-1">Model uncertainty</span>
           </div>
         )}
       </div>

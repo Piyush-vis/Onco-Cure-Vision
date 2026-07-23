@@ -86,21 +86,80 @@ def make_seg_overlay(flair_slice, seg_slice):
     return result.convert('RGB')
 
 
+HEATMAP_THRESHOLD = 0.25  # activations below this stay transparent (hide noise)
+
+
 def make_heatmap_overlay(flair_slice, heatmap_slice):
-    """FLAIR with Grad-CAM heatmap overlay."""
+    """FLAIR with Grad-CAM heatmap overlay.
+
+    The heatmap volume is already normalized to [0, 1] at the volume level, so we
+    scale it directly instead of re-normalizing per slice (which would stretch an
+    empty slice's noise to full brightness).
+    """
     gray = normalize_to_uint8(flair_slice)
     bg = Image.fromarray(gray, mode='L').resize(IMG_SIZE, Image.BILINEAR)
     bg_rgb = np.array(bg.convert('RGB'))
 
-    heat = normalize_to_uint8(heatmap_slice)
-    heat_resized = np.array(Image.fromarray(heat, mode='L').resize(IMG_SIZE, Image.BILINEAR))
+    # Preserve the volume-level [0,1] scale; just clip in case of stray values.
+    heat_norm = np.clip(heatmap_slice.astype(np.float32), 0.0, 1.0)
+    heat_uint8 = (heat_norm * 255.0).astype(np.uint8)
+    heat_resized = np.array(
+        Image.fromarray(heat_uint8, mode='L').resize(IMG_SIZE, Image.BILINEAR)
+    ).astype(np.float32) / 255.0
 
     # Apply jet colormap
-    heat_rgb = apply_jet_colormap(heat_resized)
+    heat_rgb = apply_jet_colormap((heat_resized * 255).astype(np.uint8))
 
-    # Blend: where heatmap > threshold, blend with jet colors
-    alpha = (heat_resized.astype(np.float32) / 255.0 * 0.6)[:, :, np.newaxis]
+    # Only tint where activation is meaningful; below threshold -> fully transparent.
+    alpha = np.where(heat_resized >= HEATMAP_THRESHOLD, heat_resized * 0.6, 0.0)
+    alpha = alpha[:, :, np.newaxis]
     blended = (bg_rgb * (1 - alpha) + heat_rgb * alpha).astype(np.uint8)
+
+    return Image.fromarray(blended, mode='RGB')
+
+
+# Magma-style control points (black -> purple -> orange -> pale yellow). Kept
+# visually distinct from the jet Grad-CAM map so the two overlays aren't confused.
+_MAGMA_STOPS = np.array([
+    [0, 0, 4], [40, 11, 84], [101, 21, 110], [159, 42, 99],
+    [212, 72, 66], [245, 125, 21], [250, 193, 39], [252, 253, 191],
+], dtype=np.float32)
+
+
+def apply_magma_colormap(u8):
+    """Apply a magma-style colormap to a uint8 image, returning RGB."""
+    xs = np.linspace(0, 1, len(_MAGMA_STOPS))
+    grid = np.linspace(0, 1, 256)
+    lut = np.stack([np.interp(grid, xs, _MAGMA_STOPS[:, c]) for c in range(3)], axis=1)
+    lut = lut.astype(np.uint8)
+    return lut[u8]
+
+
+UNCERTAINTY_THRESHOLD = 0.15  # below this the model is confident -> no tint
+
+
+def make_uncertainty_overlay(flair_slice, unc_slice):
+    """FLAIR with predictive-uncertainty overlay (magma colormap).
+
+    Highlights where the model is *unsure* — high normalized predictive entropy.
+    Like the heatmap, the volume is pre-normalized to [0,1], so no per-slice
+    re-normalization.
+    """
+    gray = normalize_to_uint8(flair_slice)
+    bg = Image.fromarray(gray, mode='L').resize(IMG_SIZE, Image.BILINEAR)
+    bg_rgb = np.array(bg.convert('RGB'))
+
+    unc_norm = np.clip(unc_slice.astype(np.float32), 0.0, 1.0)
+    unc_uint8 = (unc_norm * 255.0).astype(np.uint8)
+    unc_resized = np.array(
+        Image.fromarray(unc_uint8, mode='L').resize(IMG_SIZE, Image.BILINEAR)
+    ).astype(np.float32) / 255.0
+
+    unc_rgb = apply_magma_colormap((unc_resized * 255).astype(np.uint8))
+
+    alpha = np.where(unc_resized >= UNCERTAINTY_THRESHOLD, unc_resized * 0.65, 0.0)
+    alpha = alpha[:, :, np.newaxis]
+    blended = (bg_rgb * (1 - alpha) + unc_rgb * alpha).astype(np.uint8)
 
     return Image.fromarray(blended, mode='RGB')
 
@@ -149,6 +208,12 @@ def generate_all_slices(patient_folder, num_slices=20):
     if has_heatmap:
         print(f"Grad-CAM heatmap found.", file=sys.stderr)
 
+    uncertainty_path = path / 'uncertainty.nii'
+    has_uncertainty = uncertainty_path.exists()
+    uncertainty = nib.load(str(uncertainty_path)).get_fdata() if has_uncertainty else None
+    if has_uncertainty:
+        print(f"Uncertainty map found.", file=sys.stderr)
+
     slices_dir = path / 'slices'
     slices_dir.mkdir(exist_ok=True)
 
@@ -156,7 +221,7 @@ def generate_all_slices(patient_folder, num_slices=20):
     tumor_centers = find_tumor_center(seg)
 
     planes = [('axial', 2), ('sagittal', 0), ('coronal', 1)]
-    manifest = {'planes': {}, 'hasHeatmap': has_heatmap}
+    manifest = {'planes': {}, 'hasHeatmap': has_heatmap, 'hasUncertainty': has_uncertainty}
 
     for plane_name, axis in planes:
         total = flair.shape[axis]
@@ -171,6 +236,7 @@ def generate_all_slices(patient_folder, num_slices=20):
         raw_files = []
         seg_files = []
         heatmap_files = []
+        uncertainty_files = []
 
         for i, idx in enumerate(indices):
             f_slice = get_slice(flair, axis, idx)
@@ -193,11 +259,19 @@ def generate_all_slices(patient_folder, num_slices=20):
                 make_heatmap_overlay(f_slice, h_slice).save(str(slices_dir / fname_heat), optimize=True)
                 heatmap_files.append(fname_heat)
 
+            # Uncertainty overlay
+            if has_uncertainty:
+                u_slice = get_slice(uncertainty, axis, idx)
+                fname_unc = f"unc_{plane_name}_{i:03d}.png"
+                make_uncertainty_overlay(f_slice, u_slice).save(str(slices_dir / fname_unc), optimize=True)
+                uncertainty_files.append(fname_unc)
+
         manifest['planes'][plane_name] = {
             'count': len(raw_files),
             'raw': raw_files,
             'seg': seg_files,
             'heatmap': heatmap_files,
+            'uncertainty': uncertainty_files,
         }
         print(f"  {plane_name}: {len(raw_files)} slices generated", file=sys.stderr)
 
@@ -205,10 +279,16 @@ def generate_all_slices(patient_folder, num_slices=20):
         json.dump(manifest, f)
 
     total_slices = sum(p['count'] for p in manifest['planes'].values())
-    total_images = total_slices * (3 if has_heatmap else 2)
+    per_slice = 2 + (1 if has_heatmap else 0) + (1 if has_uncertainty else 0)
+    total_images = total_slices * per_slice
     print(f"Done! {total_images} images saved.", file=sys.stderr)
 
-    print(json.dumps({'success': True, 'totalSlices': total_slices, 'hasHeatmap': has_heatmap}))
+    print(json.dumps({
+        'success': True,
+        'totalSlices': total_slices,
+        'hasHeatmap': has_heatmap,
+        'hasUncertainty': has_uncertainty,
+    }))
 
 
 if __name__ == '__main__':

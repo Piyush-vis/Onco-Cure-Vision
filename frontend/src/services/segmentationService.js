@@ -53,6 +53,12 @@ export const getUserScans = async () => {
   return response.data;
 };
 
+// Fetch the triage worklist (scans ranked by clinical urgency)
+export const getWorklist = async () => {
+  const response = await api.get('/scans/worklist');
+  return response.data;
+};
+
 // Generate AI report for a scan (Doctor only)
 export const generateReport = async (scanId, language) => {
   const response = await api.post('/reports/generate', { scanId, language });
@@ -75,5 +81,26 @@ export const generateReportFromPdf = async (scanId, pdfFile, language) => {
 // Fetch a report by ID
 export const getReport = async (id) => {
   const response = await api.get(`/reports/${id}`);
+  return response.data;
+};
+
+// ── Provenance & audit (P3) ──────────────────────────────────
+export const getModelCard = async () => {
+  const response = await api.get('/provenance/model');
+  return response.data;
+};
+
+export const getAuditTrail = async (scanId) => {
+  const response = await api.get(`/provenance/audit/${scanId}`);
+  return response.data;
+};
+
+export const recordClinicianAction = async (scanId, action, note) => {
+  const response = await api.post(`/provenance/audit/${scanId}/action`, { action, note });
+  return response.data;
+};
+
+export const getFhirReport = async (scanId) => {
+  const response = await api.get(`/provenance/fhir/${scanId}`);
   return response.data;
 };

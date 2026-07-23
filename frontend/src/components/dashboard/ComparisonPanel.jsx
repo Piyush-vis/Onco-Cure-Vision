@@ -203,6 +203,16 @@ const ComparisonPanel = () => {
             <AssessmentCard assessment={result.delta.assessment} />
           </div>
 
+          {/* RANO 2.0 response assessment (P2) */}
+          {result.delta.rano && (
+            <RanoPanel
+              rano={result.delta.rano}
+              growth={result.delta.growth}
+              pseudo={result.delta.pseudoprogression}
+              intervalDays={result.delta.intervalDays}
+            />
+          )}
+
           {/* Comparison Viewer */}
           {manifest && (
             <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
@@ -373,5 +383,90 @@ const VoxelCard = ({ label, value, color, bg }) => (
     <div className={`text-xl font-bold font-mono ${color}`}>{value?.toLocaleString() || 0}</div>
   </div>
 );
+
+// RANO 2.0 volumetric response, growth kinetics, and pseudoprogression triage (P2)
+const RANO_CONFIG = {
+  CR: { bg: 'bg-green-500/10 border-green-500/40', text: 'text-green-400', label: 'Complete Response' },
+  PR: { bg: 'bg-green-500/10 border-green-500/30', text: 'text-green-300', label: 'Partial Response' },
+  SD: { bg: 'bg-yellow-500/10 border-yellow-500/30', text: 'text-yellow-300', label: 'Stable Disease' },
+  PD: { bg: 'bg-red-500/10 border-red-500/40', text: 'text-red-400', label: 'Progressive Disease' },
+};
+
+const PSEUDO_CONFIG = {
+  high: { bg: 'bg-amber-500/15 border-amber-500/50', text: 'text-amber-300' },
+  moderate: { bg: 'bg-amber-500/10 border-amber-500/30', text: 'text-amber-300' },
+  low: { bg: 'bg-slate-700/40 border-slate-600', text: 'text-slate-300' },
+};
+
+const RanoPanel = ({ rano, growth, pseudo, intervalDays }) => {
+  const c = RANO_CONFIG[rano.category] || RANO_CONFIG.SD;
+  return (
+    <div className="bg-slate-800 rounded-xl border border-slate-700 p-5 mb-6">
+      <div className="flex items-center justify-between mb-4">
+        <h4 className="text-sm font-semibold text-slate-200">RANO 2.0 Response Assessment</h4>
+        {intervalDays != null && (
+          <span className="text-xs text-slate-500">{intervalDays} days between scans</span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* Response category */}
+        <div className={`rounded-lg border p-4 flex flex-col justify-center ${c.bg}`}>
+          <div className={`text-2xl font-extrabold ${c.text}`}>{rano.category}</div>
+          <div className={`text-sm font-medium ${c.text}`}>{c.label}</div>
+          <div className="text-xs text-slate-400 mt-2">
+            {rano.target}: {rano.targetChangePercent == null ? 'new lesion' : `${rano.targetChangePercent > 0 ? '+' : ''}${rano.targetChangePercent}%`}
+          </div>
+        </div>
+
+        {/* Growth kinetics */}
+        <div className="rounded-lg border border-slate-700 bg-slate-900 p-4">
+          <div className="text-xs text-slate-400 mb-2">Growth Kinetics</div>
+          <div className="space-y-1.5 text-sm">
+            <div className="flex justify-between">
+              <span className="text-slate-400">Doubling time</span>
+              <span className="font-mono text-slate-200">
+                {growth?.volumeDoublingTimeDays ? `${growth.volumeDoublingTimeDays} d` : '—'}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">Monthly change</span>
+              <span className={`font-mono ${growth?.monthlyVolumeChangePercent > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                {growth?.monthlyVolumeChangePercent != null
+                  ? `${growth.monthlyVolumeChangePercent > 0 ? '+' : ''}${growth.monthlyVolumeChangePercent}%`
+                  : '—'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Pseudoprogression triage */}
+        {pseudo?.applicable ? (
+          <div className={`rounded-lg border p-4 ${(PSEUDO_CONFIG[pseudo.riskLevel] || PSEUDO_CONFIG.low).bg}`}>
+            <div className="text-xs text-slate-400 mb-1">Pseudoprogression risk</div>
+            <div className={`text-lg font-bold capitalize ${(PSEUDO_CONFIG[pseudo.riskLevel] || PSEUDO_CONFIG.low).text}`}>
+              {pseudo.riskLevel}
+            </div>
+            {pseudo.factors?.length > 0 && (
+              <ul className="mt-2 text-[11px] text-slate-400 list-disc list-inside space-y-0.5">
+                {pseudo.factors.map((f, i) => <li key={i}>{f}</li>)}
+              </ul>
+            )}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-slate-700 bg-slate-900 p-4 flex items-center justify-center">
+            <span className="text-xs text-slate-500 text-center">
+              Pseudoprogression check applies only to apparent progression
+            </span>
+          </div>
+        )}
+      </div>
+
+      {rano.note && (
+        <p className="text-[11px] text-slate-500 mt-3 italic">{rano.note}</p>
+      )}
+    </div>
+  );
+};
 
 export default ComparisonPanel;

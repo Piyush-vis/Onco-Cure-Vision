@@ -111,7 +111,162 @@ def make_side_by_side(flair_old_slice, seg_old_slice, flair_new_slice, seg_new_s
     return combined
 
 
-def generate_comparison(old_folder, new_folder, output_folder, num_slices=20):
+def _pct_change(old, new):
+    """Percent change from old to new, guarding divide-by-zero."""
+    if old <= 0:
+        return float('inf') if new > 0 else 0.0
+    return (new - old) / old * 100.0
+
+
+def intensity_entropy(flair_vol, mask):
+    """First-order intensity entropy (a radiomic heterogeneity proxy) within a mask."""
+    vals = flair_vol[mask]
+    if vals.size < 10:
+        return 0.0
+    hist, _ = np.histogram(vals, bins=32, density=False)
+    p = hist.astype(np.float64)
+    p = p[p > 0]
+    p = p / p.sum()
+    return float(-(p * np.log2(p)).sum())  # bits, 0..5 for 32 bins
+
+
+def rano_assessment(old_seg, new_seg):
+    """
+    Volumetric RANO 2.0 response category.
+
+    Tracks enhancing tumor (label 4) as the primary target for contrast-enhancing
+    disease, falling back to whole-tumor burden when there is no measurable
+    enhancing component. Volumetric thresholds correspond to the classic 2D RANO
+    bidimensional cutoffs (≥50% decrease / ≥25% increase) mapped to volume via the
+    ~1.5 power law: PR ≈ ≥65% volume decrease, PD ≈ ≥40% volume increase.
+    """
+    old_enh = int(np.sum(old_seg == 4))
+    new_enh = int(np.sum(new_seg == 4))
+    old_whole = int(np.sum(old_seg > 0))
+    new_whole = int(np.sum(new_seg > 0))
+
+    # Choose measurable target: enhancing if present at baseline, else whole tumor.
+    if old_enh >= 50 or new_enh >= 50:
+        target, old_v, new_v = 'enhancing tumor', old_enh, new_enh
+    else:
+        target, old_v, new_v = 'whole tumor', old_whole, new_whole
+
+    change = _pct_change(old_v, new_v)
+
+    # New enhancing lesion where there was none => progression.
+    new_enhancing_lesion = (old_enh < 50 and new_enh >= 200)
+
+    if new_v == 0 and old_v > 0:
+        category, label = 'CR', 'Complete Response'
+    elif new_enhancing_lesion or (change != float('inf') and change >= 40):
+        category, label = 'PD', 'Progressive Disease'
+    elif change == float('inf'):
+        category, label = 'PD', 'Progressive Disease'
+    elif change <= -65:
+        category, label = 'PR', 'Partial Response'
+    else:
+        category, label = 'SD', 'Stable Disease'
+
+    return {
+        'category': category,
+        'label': label,
+        'target': target,
+        'targetOldVoxels': old_v,
+        'targetNewVoxels': new_v,
+        'targetChangePercent': round(change, 1) if change != float('inf') else None,
+        'newEnhancingLesion': bool(new_enhancing_lesion),
+        'note': ('Volumetric RANO 2.0 estimate. Confirm on a follow-up scan ≥4 weeks '
+                 'later and correlate with steroid dose and clinical status.'),
+    }
+
+
+def growth_metrics(old_voxels, new_voxels, interval_days):
+    """Specific growth rate and volume doubling time from two timepoints."""
+    if interval_days is None or interval_days <= 0 or old_voxels <= 0 or new_voxels <= 0:
+        return {
+            'intervalDays': interval_days,
+            'specificGrowthRatePerDay': None,
+            'volumeDoublingTimeDays': None,
+            'monthlyVolumeChangePercent': None,
+        }
+    sgr = np.log(new_voxels / old_voxels) / interval_days  # per day
+    doubling = (np.log(2) / sgr) if sgr > 1e-9 else None    # only if growing
+    monthly = (np.exp(sgr * 30) - 1) * 100                  # % change per 30 days
+    return {
+        'intervalDays': round(interval_days, 1),
+        'specificGrowthRatePerDay': round(float(sgr), 5),
+        'volumeDoublingTimeDays': round(float(doubling), 1) if doubling else None,
+        'monthlyVolumeChangePercent': round(float(monthly), 1),
+    }
+
+
+def pseudoprogression_risk(old_seg, new_seg, new_flair, rano, interval_days):
+    """
+    Heuristic decision support: how likely an apparent progression is treatment
+    effect (pseudoprogression / radiation necrosis) rather than true tumor growth.
+
+    NOT a diagnosis. Raises suspicion when apparent progression is accompanied by
+    the hallmarks of treatment effect: a short post-treatment interval, a
+    disproportionate edema increase, a rising necrotic fraction, and heterogeneous
+    (patchy) new enhancement.
+    """
+    # Only meaningful when the scan looks like progression.
+    if rano['category'] != 'PD':
+        return {
+            'applicable': False,
+            'riskLevel': 'n/a',
+            'score': 0,
+            'factors': [],
+            'note': 'Pseudoprogression assessment applies only to apparent progression.',
+        }
+
+    factors = []
+    score = 0
+
+    # 1) Timing: classic pseudoprogression window is within ~12 weeks of chemoradiation.
+    # We only have the inter-scan interval as a proxy for time since treatment.
+    if interval_days is not None and 0 < interval_days <= 90:
+        score += 2
+        factors.append(f"Short inter-scan interval ({int(interval_days)}d) within the typical treatment-effect window")
+
+    # 2) Disproportionate edema increase (treatment effect often inflames white matter).
+    old_ede, new_ede = int(np.sum(old_seg == 2)), int(np.sum(new_seg == 2))
+    if _pct_change(old_ede, new_ede) >= 30:
+        score += 1
+        factors.append("Marked increase in peritumoral edema")
+
+    # 3) Rising necrotic fraction (radiation necrosis).
+    old_nec, new_nec = int(np.sum(old_seg == 1)), int(np.sum(new_seg == 1))
+    if _pct_change(old_nec, new_nec) >= 30:
+        score += 1
+        factors.append("Increasing necrotic component (possible radiation necrosis)")
+
+    # 4) Heterogeneous new enhancement (patchy pattern favors treatment effect).
+    new_only_enh = (new_seg == 4) & (old_seg != 4)
+    ent = intensity_entropy(new_flair, new_only_enh)
+    if ent >= 3.5:
+        score += 1
+        factors.append(f"Heterogeneous new enhancement pattern (entropy {ent:.1f})")
+
+    if score >= 4:
+        level = 'high'
+    elif score >= 2:
+        level = 'moderate'
+    else:
+        level = 'low'
+
+    return {
+        'applicable': True,
+        'riskLevel': level,
+        'score': int(score),
+        'factors': factors,
+        'note': ('Decision support only — not a diagnosis. Distinguishing '
+                 'pseudoprogression from true progression requires the treatment '
+                 'timeline, perfusion/advanced MRI, and/or follow-up imaging.'),
+    }
+
+
+def generate_comparison(old_folder, new_folder, output_folder, num_slices=20, interval_days=None):
     old_path = Path(old_folder)
     new_path = Path(new_folder)
     out_path = Path(output_folder)
@@ -192,6 +347,11 @@ def generate_comparison(old_folder, new_folder, output_folder, num_slices=20):
 
     vol_change_pct = round(((new_tumor_vol - old_tumor_vol) / max(old_tumor_vol, 1)) * 100, 1)
 
+    # RANO 2.0 response assessment, growth kinetics, and pseudoprogression triage.
+    rano = rano_assessment(old_seg, new_seg)
+    growth_kin = growth_metrics(int(old_tumor_vol), int(new_tumor_vol), interval_days)
+    pseudo = pseudoprogression_risk(old_seg, new_seg, new_flair, rano, interval_days)
+
     metrics = {
         'volumeChange': {
             'oldVoxels': int(old_tumor_vol),
@@ -208,7 +368,12 @@ def generate_comparison(old_folder, new_folder, output_folder, num_slices=20):
             'growthVoxels': int(growth),
             'shrinkageVoxels': int(shrinkage),
         },
+        # Coarse legacy label (kept for backward compatibility with the UI).
         'assessment': 'Improving' if vol_change_pct < -10 else ('Progressing' if vol_change_pct > 10 else 'Stable'),
+        # Clinical-grade additions (P2)
+        'rano': rano,
+        'growth': growth_kin,
+        'pseudoprogression': pseudo,
     }
 
     total_imgs = sum(p['count'] * 2 for p in manifest['planes'].values())
@@ -226,4 +391,11 @@ if __name__ == '__main__':
     if '--num-slices' in sys.argv:
         num = int(sys.argv[sys.argv.index('--num-slices') + 1])
 
-    generate_comparison(sys.argv[1], sys.argv[2], sys.argv[3], num)
+    interval = None
+    if '--interval-days' in sys.argv:
+        try:
+            interval = float(sys.argv[sys.argv.index('--interval-days') + 1])
+        except (ValueError, IndexError):
+            interval = None
+
+    generate_comparison(sys.argv[1], sys.argv[2], sys.argv[3], num, interval_days=interval)

@@ -5,6 +5,8 @@ import ControlPanel from './ControlPanel';
 import HistoryPanel from './HistoryPanel';
 import AnalyticsPanel from './AnalyticsPanel';
 import ComparisonPanel from './ComparisonPanel';
+import WorklistPanel from './WorklistPanel';
+import ProvenancePanel from './ProvenancePanel';
 import BrainViewer from '../viewer3d/BrainViewer';
 import SliceViewer from '../viewer3d/SliceViewer';
 import ReportPanel from '../reports/ReportPanel';
@@ -93,7 +95,15 @@ const Dashboard = () => {
             Onco-Cure Vision
           </button>
           <nav className="hidden md:flex space-x-1 ml-8">
-            <button 
+            {user?.role === 'doctor' && (
+              <button
+                onClick={() => setActiveTab('worklist')}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'worklist' ? 'bg-slate-800 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-800/50'}`}
+              >
+                Worklist
+              </button>
+            )}
+            <button
               onClick={() => setActiveTab('upload')}
               className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'upload' ? 'bg-slate-800 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-800/50'}`}
             >
@@ -124,12 +134,20 @@ const Dashboard = () => {
             >
               Analytics
             </button>
-            <button 
+            <button
                onClick={() => setActiveTab('compare')}
                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'compare' ? 'bg-slate-800 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-800/50'}`}
             >
               Compare
             </button>
+            {user?.role === 'doctor' && (
+              <button
+                 onClick={() => setActiveTab('provenance')}
+                 className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'provenance' ? 'bg-slate-800 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-800/50'}`}
+              >
+                Provenance
+              </button>
+            )}
           </nav>
         </div>
         
@@ -267,6 +285,18 @@ const Dashboard = () => {
         {activeTab === 'compare' && (
           <div className="h-full bg-slate-900 p-8 overflow-y-auto custom-scrollbar absolute inset-0">
             <ComparisonPanel />
+          </div>
+        )}
+
+        {activeTab === 'worklist' && (
+          <div className="h-full bg-slate-900 p-8 overflow-y-auto custom-scrollbar absolute inset-0">
+            <WorklistPanel onSelectScan={handleScanSelect} />
+          </div>
+        )}
+
+        {activeTab === 'provenance' && (
+          <div className="h-full bg-slate-900 p-8 overflow-y-auto custom-scrollbar absolute inset-0">
+            <ProvenancePanel scanData={scanData} scanId={currentScanId} />
           </div>
         )}
       </main>

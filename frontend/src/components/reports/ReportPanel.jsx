@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { generateReport, generateReportFromPdf } from '../../services/segmentationService';
-import { FiFileText, FiRefreshCcw, FiChevronDown, FiChevronUp, FiDownload, FiUploadCloud, FiGlobe } from 'react-icons/fi';
+import { FiFileText, FiRefreshCcw, FiChevronDown, FiChevronUp, FiDownload, FiUploadCloud, FiGlobe, FiAlertTriangle } from 'react-icons/fi';
 
 const LANGUAGES = [
   'English', 'Hindi', 'Spanish', 'French', 'German', 'Chinese',
@@ -57,12 +57,50 @@ const ReportPanel = ({ scanData, userRole, scanId }) => {
 
         {/* Key Metrics Grid - Only show if we have 3D scan data */}
         {segmentationData ? (
-          <div className="grid grid-cols-2 gap-3 mb-2">
-              <MetricCard label="Volume" value={`${segmentationData.tumorVolume || 0} cm³`} />
-              <MetricCard label="Location" value={segmentationData.location || "N/A"} highlight />
-              <MetricCard label="Confidence" value={`${segmentationData.confidence || 0}%`} color={segmentationData.confidence > 80 ? 'text-green-400' : 'text-yellow-400'} />
-              <MetricCard label="Status" value="Analyzed" color="text-indigo-400" />
-          </div>
+          <>
+            {/* Flag-for-review banner (P1: uncertainty) */}
+            {segmentationData.flagForReview && (
+              <div className="mb-3 px-3 py-2.5 bg-amber-900/30 border border-amber-500/50 rounded-lg flex items-start gap-2">
+                <FiAlertTriangle className="text-amber-400 mt-0.5 shrink-0" />
+                <div>
+                  <div className="text-xs font-semibold text-amber-300">Recommend manual review</div>
+                  {segmentationData.reviewReasons?.length > 0 && (
+                    <ul className="mt-1 text-[11px] text-amber-200/80 list-disc list-inside space-y-0.5">
+                      {segmentationData.reviewReasons.map((r, i) => <li key={i}>{r}</li>)}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3 mb-2">
+                <MetricCard label="Volume" value={`${segmentationData.tumorVolume ?? 0} cm³`} />
+                <MetricCard label="Location" value={segmentationData.location || "N/A"} highlight />
+                <MetricCard
+                  label="Confidence"
+                  value={`${segmentationData.confidence ?? 0}%`}
+                  sub={ciText(segmentationData.confidenceInterval)}
+                  color={segmentationData.confidence > 80 ? 'text-green-400' : segmentationData.confidence > 60 ? 'text-yellow-400' : 'text-red-400'}
+                />
+                <MetricCard
+                  label="Uncertainty"
+                  value={uncertaintyLabel(segmentationData.tumorUncertainty)}
+                  sub={segmentationData.tumorUncertainty != null ? `entropy ${segmentationData.tumorUncertainty.toFixed(2)}` : null}
+                  color={uncertaintyColor(segmentationData.tumorUncertainty)}
+                />
+                {segmentationData.tumorType && (
+                  <MetricCard label="Tumor Type" value={segmentationData.tumorType} color="text-indigo-300" />
+                )}
+                {segmentationData.heatmapAgreement != null && (
+                  <MetricCard
+                    label="Heatmap ↔ Seg"
+                    value={`${Math.round(segmentationData.heatmapAgreement * 100)}%`}
+                    sub="explanation overlap"
+                    color={segmentationData.heatmapAgreement >= 0.3 ? 'text-green-400' : 'text-yellow-400'}
+                  />
+                )}
+            </div>
+          </>
         ) : (
           <div className="text-sm text-slate-400">
              Standalone PDF Report Analysis Mode
@@ -172,12 +210,34 @@ const ReportPanel = ({ scanData, userRole, scanId }) => {
   );
 };
 
-const MetricCard = ({ label, value, highlight, color }) => (
+const MetricCard = ({ label, value, highlight, color, sub }) => (
     <div className={`p-3 rounded-lg border ${highlight ? 'bg-indigo-900/30 border-indigo-500/50' : 'bg-slate-900 border-slate-700'}`}>
         <div className="text-xs text-slate-400 mb-1">{label}</div>
         <div className={`font-bold font-mono tracking-tight ${color || 'text-slate-100'} ${highlight ? 'text-indigo-300' : ''}`}>{value}</div>
+        {sub && <div className="text-[10px] text-slate-500 mt-0.5 font-mono">{sub}</div>}
     </div>
 );
+
+// Confidence interval "95% CI 75.8–76.6%" (P1: uncertainty)
+const ciText = (ci) => {
+    if (!Array.isArray(ci) || ci.length !== 2) return null;
+    if (ci[0] === ci[1]) return null; // single TTA pass — no meaningful interval
+    return `95% CI ${ci[0]}–${ci[1]}%`;
+};
+
+const uncertaintyLabel = (u) => {
+    if (u == null) return 'N/A';
+    if (u < 0.2) return 'Low';
+    if (u < 0.35) return 'Moderate';
+    return 'High';
+};
+
+const uncertaintyColor = (u) => {
+    if (u == null) return 'text-slate-300';
+    if (u < 0.2) return 'text-green-400';
+    if (u < 0.35) return 'text-yellow-400';
+    return 'text-red-400';
+};
 
 // Simple MD formatter since we don't have react-markdown installed yet
 const formatMarkdown = (text) => {

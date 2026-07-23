@@ -26,6 +26,7 @@ app.use('/api/scans', require('./routes/scanRoutes'));
 app.use('/api/reports', require('./routes/reportRoutes'));
 app.use('/api/analytics', require('./routes/analyticsRoutes'));
 app.use('/api/compare', require('./routes/comparisonRoutes'));
+app.use('/api/provenance', require('./routes/provenanceRoutes'));
 
 // Health check
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));
